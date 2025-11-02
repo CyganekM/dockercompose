@@ -8,8 +8,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # Приводим имя репозитория к lowercase
-  IMAGE_NAME: ${{ lower(github.repository) }}
 
 jobs:
   build-and-push:
@@ -35,28 +33,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 4. Log in to Docker Hub
+      # 4. Log in to Docker Hub (опционально)
       - name: Log in to Docker Hub
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 5. Extract metadata for Docker
+      # 5. Вычисляем lowercase имя образа
+      - name: Set image name
+        id: set-image
+        run: |
+          # Преобразуем имя репозитория в lowercase
+          IMAGE_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "Using image name: ${IMAGE_NAME}"
+
+      # 6. Extract metadata for Docker
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ steps.set-image.outputs.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=sha,prefix=commit-
 
-      # 6. Build and push Docker image
+      # 7. Build and push Docker image
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -68,18 +73,24 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 7. Run container tests (ИСПРАВЛЕННЫЙ ШАГ)
+      # 8. Run container tests
       - name: Run container tests
-        if: ${{ github.event_name != 'pull_request' }}
+        if: github.event_name != 'pull_request'
         run: |
           # Сначала стопим старый контейнер если есть
           docker stop test-container || true
           docker rm test-container || true
           
+          # Получаем имя образа
+          IMAGE_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_FULL="${{ env.REGISTRY }}/${IMAGE_NAME}:main"
+          
+          echo "Testing image: ${IMAGE_FULL}"
+          
           # Запускаем новый контейнер
           docker run --name test-container -d -p 8080:8080 \
             -e SPRING_PROFILES_ACTIVE=test \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main
+            ${IMAGE_FULL}
           
           # Ждем инициализации приложения
           echo "Waiting for Spring Boot to start..."
@@ -97,7 +108,7 @@ jobs:
           docker stop test-container
           echo "✅ All tests passed!"
 
-      # 8. Telegram Notification on Success
+      # 9. Telegram Notification on Success
       - name: Telegram Notification Success
         if: success() && github.event_name != 'pull_request'
         uses: appleboy/telegram-action@master
@@ -109,16 +120,16 @@ jobs:
             
             *Repository:* ${{ github.repository }}
             *Branch:* ${{ github.ref_name }}
-            *Commit:* ${{ github.sha | slice: 0, 8 }}
+            *Commit:* ${{ github.sha }}
             *Author:* ${{ github.actor }}
             
-            *Image:* `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main`
+            *Image:* ${{ env.REGISTRY }}/${{ steps.set-image.outputs.IMAGE_NAME }}:main
             *Status:* ✅ Build and tests completed successfully
             
             [View Workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           parse_mode: markdown
 
-      # 9. Telegram Notification on Failure
+      # 10. Telegram Notification on Failure
       - name: Telegram Notification Failure
         if: failure() && github.event_name != 'pull_request'
         uses: appleboy/telegram-action@master
@@ -130,7 +141,7 @@ jobs:
             
             *Repository:* ${{ github.repository }}
             *Branch:* ${{ github.ref_name }}
-            *Commit:* ${{ github.sha | slice: 0, 8 }}
+            *Commit:* ${{ github.sha }}
             *Author:* ${{ github.actor }}
             
             *Status:* ❌ Build or tests failed
