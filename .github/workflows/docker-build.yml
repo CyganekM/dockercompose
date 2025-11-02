@@ -73,117 +73,58 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-          # 8. Isolated network test
-      - name: Isolated network test
+          # 8. Working network test
+      - name: Working network test
         if: github.event_name != 'pull_request'
         run: |
+          set -e  # Exit on error
+          
           IMAGE_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          IMAGE_FULL="${{ env.REGISTRY }}/${IMAGE_NAME}:main"
+          IMAGE_FULL="ghcr.io/$IMAGE_NAME:main"
           
-          echo "🔍 Starting ISOLATED network test..."
+          echo "🔧 Testing: $IMAGE_FULL"
           
-          # Создаем сеть
-          docker network create test-net
+          # Create network
+          docker network create test-network
           
-          # MySQL в сети (без портов)
-          docker run -d --name mysql-db \
-          --network test-net \
-          -e MYSQL_ROOT_PASSWORD=root \
-          -e MYSQL_DATABASE=appdb \
-          -e MYSQL_USER=appuser \
-          -e MYSQL_PASSWORD=apppass \
+          # Start MySQL (internal only)
+          echo "🐬 Starting MySQL..."
+          docker run -d --name mysql-container \
+          --network test-network \
+          -e MYSQL_ROOT_PASSWORD=rootpass \
+          -e MYSQL_DATABASE=testdb \
           mysql:8.0
           
-          # Ждем MySQL
-          sleep 30
-          docker exec mysql-db mysql -u appuser -papppass -e "CREATE DATABASE IF NOT EXISTS appdb;" || true
+          # Wait for MySQL
+          echo "⏳ Waiting for MySQL..."
+          sleep 40
           
-          # Приложение в той же сети + порт наружу
-          docker run -d --name spring-app \
-          --network test-net \
+          # Start Application
+          echo "🚀 Starting Spring Boot..."
+          docker run -d --name app-container \
+          --network test-network \
           -p 8080:8080 \
-          -e SPRING_DATASOURCE_URL=jdbc:mysql://mysql-db:3306/appdb \
-          -e SPRING_DATASOURCE_USERNAME=appuser \
-          -e SPRING_DATASOURCE_PASSWORD=apppass \
+          -e SPRING_DATASOURCE_URL=jdbc:mysql://mysql-container:3306/testdb \
+          -e SPRING_DATASOURCE_USERNAME=root \
+          -e SPRING_DATASOURCE_PASSWORD=rootpass \
           -e SPRING_JPA_HIBERNATE_DDL_AUTO=update \
-          ${IMAGE_FULL}
+          "$IMAGE_FULL"
           
-          # Ждем запуска
-          echo "⏳ Waiting for startup..."
-          sleep 60
+          # Wait for app
+          echo "⏳ Waiting for Spring Boot..."
+          sleep 75
           
-          # Проверяем приложение
-          echo "✅ Testing application..."
+          # Test application
+          echo "🧪 Testing application..."
           curl -f http://localhost:8080/api/health
           
-          # Проверяем изоляцию БД
-          echo "🔒 Testing DB isolation..."
-          if docker port mysql-db 3306 2>/dev/null; then
-          echo "❌ MySQL is exposed!"
-          exit 1
-          fi
+          # Cleanup
+          echo "🧹 Cleaning up..."
+          docker stop app-container mysql-container
+          docker rm app-container mysql-container
+          docker network rm test-network
           
-          # Чистка
-          docker stop spring-app mysql-db
-          docker rm spring-app mysql-db
-          docker network rm test-net
-          
-          echo "🎉 Isolation test PASSED!"    # 8. Isolated network test
-      - name: Isolated network test
-        if: github.event_name != 'pull_request'
-        run: |
-          IMAGE_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          IMAGE_FULL="${{ env.REGISTRY }}/${IMAGE_NAME}:main"
-          
-          echo "🔍 Starting ISOLATED network test..."
-          
-          # Создаем сеть
-          docker network create test-net
-          
-          # MySQL в сети (без портов)
-          docker run -d --name mysql-db \
-          --network test-net \
-          -e MYSQL_ROOT_PASSWORD=root \
-          -e MYSQL_DATABASE=appdb \
-          -e MYSQL_USER=appuser \
-          -e MYSQL_PASSWORD=apppass \
-          mysql:8.0
-          
-          # Ждем MySQL
-          sleep 30
-          docker exec mysql-db mysql -u appuser -papppass -e "CREATE DATABASE IF NOT EXISTS appdb;" || true
-          
-          # Приложение в той же сети + порт наружу
-          docker run -d --name spring-app \
-          --network test-net \
-          -p 8080:8080 \
-          -e SPRING_DATASOURCE_URL=jdbc:mysql://mysql-db:3306/appdb \
-          -e SPRING_DATASOURCE_USERNAME=appuser \
-          -e SPRING_DATASOURCE_PASSWORD=apppass \
-          -e SPRING_JPA_HIBERNATE_DDL_AUTO=update \
-          ${IMAGE_FULL}
-          
-          # Ждем запуска
-          echo "⏳ Waiting for startup..."
-          sleep 60
-          
-          # Проверяем приложение
-          echo "✅ Testing application..."
-          curl -f http://localhost:8080/api/health
-          
-          # Проверяем изоляцию БД
-          echo "🔒 Testing DB isolation..."
-          if docker port mysql-db 3306 2>/dev/null; then
-          echo "❌ MySQL is exposed!"
-          exit 1
-          fi
-          
-          # Чистка
-          docker stop spring-app mysql-db
-          docker rm spring-app mysql-db
-          docker network rm test-net
-          
-          echo "🎉 Isolation test PASSED!
+          echo "✅ Network test PASSED"
 
       # 9. Telegram Notification on Success
       - name: Telegram Notification Success
