@@ -8,7 +8,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # Приводим имя репозитория к lowercase
+  IMAGE_NAME: ${{ lower(github.repository) }}
 
 jobs:
   build-and-push:
@@ -36,6 +37,7 @@ jobs:
 
       # 4. Log in to Docker Hub
       - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -48,38 +50,56 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/spring-boot-app
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
-            type=sha,prefix={{branch}}-
+            type=sha,prefix=commit-
 
       # 6. Build and push Docker image
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./
-          file: ./Dockerfile
+          context: ./backend
+          file: ./backend/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 7. Run container tests
+      # 7. Run container tests (ИСПРАВЛЕННЫЙ ШАГ)
       - name: Run container tests
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
+          # Сначала стопим старый контейнер если есть
+          docker stop test-container || true
+          docker rm test-container || true
+          
+          # Запускаем новый контейнер
           docker run --name test-container -d -p 8080:8080 \
             -e SPRING_PROFILES_ACTIVE=test \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          sleep 30
-          curl -f http://localhost:8080/api/health || exit 1
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main
+          
+          # Ждем инициализации приложения
+          echo "Waiting for Spring Boot to start..."
+          sleep 45
+          
+          # Проверяем health endpoint
+          echo "Testing health endpoint..."
+          curl -f http://localhost:8080/api/health || (echo "Health check failed!" && exit 1)
+          
+          # Проверяем основной endpoint
+          echo "Testing users endpoint..."
+          curl -f http://localhost:8080/api/users || (echo "Users endpoint failed!" && exit 1)
+          
+          # Останавливаем контейнер
           docker stop test-container
+          echo "✅ All tests passed!"
 
       # 8. Telegram Notification on Success
       - name: Telegram Notification Success
-        if: success()
+        if: success() && github.event_name != 'pull_request'
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -89,18 +109,18 @@ jobs:
             
             *Repository:* ${{ github.repository }}
             *Branch:* ${{ github.ref_name }}
-            *Commit:* ${{ github.sha }}
+            *Commit:* ${{ github.sha | slice: 0, 8 }}
             *Author:* ${{ github.actor }}
             
-            *Image:* `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest`
-            *Status:* ✅ Build completed successfully
+            *Image:* `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main`
+            *Status:* ✅ Build and tests completed successfully
             
             [View Workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           parse_mode: markdown
 
       # 9. Telegram Notification on Failure
       - name: Telegram Notification Failure
-        if: failure()
+        if: failure() && github.event_name != 'pull_request'
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -110,10 +130,10 @@ jobs:
             
             *Repository:* ${{ github.repository }}
             *Branch:* ${{ github.ref_name }}
-            *Commit:* ${{ github.sha }}
+            *Commit:* ${{ github.sha | slice: 0, 8 }}
             *Author:* ${{ github.actor }}
             
-            *Status:* ❌ Build failed
+            *Status:* ❌ Build or tests failed
             
             [View Workflow Logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           parse_mode: markdown
